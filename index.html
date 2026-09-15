@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' blob: data:; media-src 'self' blob: mediastream:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="description" content="Scancat — scan documents with your webcam, entirely in the browser. Live edge detection, perspective correction, scanner-style cleanup, multi-page PDF. No uploads, no servers, no analytics.">
+<title>Scancat — your webcam is a scanner, nothing leaves your device</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="top">
+  <a class="brand" href="./" aria-label="Scancat home">
+    <svg class="mark" viewBox="0 0 120 52" aria-hidden="true" focusable="false">
+      <rect x="4" y="6" width="44" height="40" rx="3" fill="var(--paper)" stroke="currentColor" stroke-width="3"/>
+      <rect x="4" y="22" width="44" height="3" fill="var(--scan)"/>
+      <rect x="12" y="13" width="20" height="3" fill="currentColor" opacity="0.6"/>
+      <rect x="12" y="32" width="28" height="2" fill="currentColor" opacity="0.35"/>
+      <rect x="12" y="38" width="22" height="2" fill="currentColor" opacity="0.35"/>
+      <polygon points="82,30 90,8 101,30" fill="currentColor"/>
+      <polygon points="103,30 111,8 119,30" fill="currentColor"/>
+      <rect x="78" y="28" width="42" height="20" rx="4" fill="currentColor"/>
+      <circle cx="92" cy="38" r="3.2" fill="var(--paper)"/>
+      <circle cx="108" cy="38" r="3.2" fill="var(--paper)"/>
+    </svg>
+    <span class="wordmark">Scancat</span>
+  </a>
+  <div class="stamp" role="note" aria-label="100 percent local, no uploads ever">
+    100% local
+    <span>no uploads · ever</span>
+  </div>
+  <a class="srclink mono" href="https://github.com/nipunbatra/scancat">source ↗</a>
+</header>
+
+<main>
+
+<section id="hero">
+  <h1>Your webcam is a <span class="hl">scanner</span>.</h1>
+  <p class="lede">Hold a page up to the camera. Scancat finds its edges, straightens it,
+  cleans it up the way a flatbed would, and stacks page after page into one PDF.
+  No phone, no AirDrop, no cropping by hand. Everything runs in this tab;
+  <em>nothing is uploaded</em>.</p>
+  <div class="startrow">
+    <button id="start" class="btn primary big" type="button">Start camera</button>
+    <span class="hint mono">asks for camera permission once · works offline</span>
+  </div>
+  <p id="camerr" class="err mono" role="alert" hidden></p>
+</section>
+
+<section id="scanner" hidden>
+  <div class="stage">
+    <div class="viewport sheet" id="viewport">
+      <video id="video" autoplay playsinline muted></video>
+      <svg id="overlay" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+        <polygon id="quad" points=""/>
+        <g id="dots"></g>
+      </svg>
+      <div id="flash" aria-hidden="true"></div>
+      <div class="pillrow">
+        <div id="pill" class="pill mono" role="status" aria-live="polite">starting camera…</div>
+        <svg id="ring" class="ring" viewBox="0 0 36 36" hidden aria-hidden="true">
+          <circle class="bg" cx="18" cy="18" r="15.5"/>
+          <circle id="ringfg" class="fg" cx="18" cy="18" r="15.5"/>
+        </svg>
+      </div>
+    </div>
+    <div class="controls">
+      <button id="shutter" class="shutter" type="button" aria-label="Capture page (space)" title="Capture (space)"><span></span></button>
+      <div class="ctls">
+        <label class="ctl"><span class="k mono">camera</span><select id="camera" aria-label="Camera"></select></label>
+        <label class="ctl"><span class="k mono">look</span>
+          <select id="mode" aria-label="Enhancement">
+            <option value="color">colour</option>
+            <option value="gray">greyscale</option>
+            <option value="bw">black &amp; white</option>
+            <option value="original">original</option>
+          </select></label>
+        <label class="ctl"><span class="k mono">page</span>
+          <select id="pagesize" aria-label="PDF page size">
+            <option value="fit">fit scan</option>
+            <option value="a4">A4</option>
+            <option value="letter">Letter</option>
+          </select></label>
+        <label class="ctl chk"><input type="checkbox" id="auto" checked> <span>auto-capture when steady</span></label>
+        <label class="ctl chk"><input type="checkbox" id="sound" checked> <span>shutter sound</span></label>
+      </div>
+      <span id="res" class="mono res" aria-label="Camera resolution"></span>
+    </div>
+    <p class="keys mono">space captures · ⌫ removes the last page · ⌘S / ctrl+S downloads the PDF</p>
+  </div>
+
+  <aside class="tray sheet" id="tray" aria-label="Scanned pages">
+    <div class="tray-head">
+      <span id="count" class="mono">no pages yet</span>
+      <button id="clear" class="btn ghost small" type="button" disabled>clear all</button>
+    </div>
+    <ol id="pages" class="pages"></ol>
+    <p id="trayhint" class="trayhint">Captured pages stack up here. Click a page to rotate it, fix its
+    corners, or delete it; drag to reorder.</p>
+    <div class="tray-foot">
+      <button id="pdf" class="btn primary" type="button" disabled>Download PDF</button>
+      <button id="jpgs" class="btn ghost" type="button" disabled title="Download every page as a JPEG">JPEGs</button>
+    </div>
+  </aside>
+</section>
+
+<section id="facts" class="facts" aria-label="How Scancat works">
+  <div class="fact">
+    <h2 class="mono">edges found live</h2>
+    <p>The camera feed is scanned a dozen times a second for the four straight edges of a
+    page — a hand over one edge is fine. Hold still for a moment and the page is
+    <strong>captured on its own</strong>; or press space whenever you like. Corners
+    can be nudged afterwards.</p>
+  </div>
+  <div class="fact">
+    <h2 class="mono">cleaned like a scanner</h2>
+    <p>The page is un-skewed with a perspective warp, then uneven lighting is flattened
+    so paper reads as <strong>flat white</strong> and ink as ink. Pick colour, greyscale,
+    or crisp black &amp; white — and rotate any page that came in sideways.</p>
+  </div>
+  <div class="fact">
+    <h2 class="mono">local by design</h2>
+    <p>A strict Content-Security-Policy forbids every network request, so the page
+    couldn't upload a frame even if it wanted to. The PDF is written in this tab, from
+    scratch. <a href="https://github.com/nipunbatra/scancat">Open source, MIT.</a></p>
+  </div>
+</section>
+
+</main>
+
+<div id="editor" class="modal" hidden role="dialog" aria-modal="true" aria-label="Edit page">
+  <div class="modal-card sheet">
+    <div class="modal-bar">
+      <span id="edtitle" class="mono">page 1</span>
+      <div class="modal-acts">
+        <button id="edrotl" class="btn ghost" type="button" title="Rotate left">⟲</button>
+        <button id="edrotr" class="btn ghost" type="button" title="Rotate right">⟳</button>
+        <select id="edmode" class="btn ghost" aria-label="Look for this page">
+          <option value="">look: as set</option>
+          <option value="color">colour</option>
+          <option value="gray">greyscale</option>
+          <option value="bw">black &amp; white</option>
+          <option value="original">original</option>
+        </select>
+        <button id="edcorners" class="btn ghost" type="button">adjust corners</button>
+        <button id="edcopy" class="btn ghost" type="button" title="Copy the page image to the clipboard">copy</button>
+        <button id="eddl" class="btn ghost" type="button" title="Download this page as a JPEG">jpeg</button>
+        <button id="eddel" class="btn ghost danger" type="button">delete</button>
+        <button id="edclose" class="btn" type="button">done</button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div id="edview"><img id="edimg" alt="Scanned page"></div>
+      <div id="cornerpane" hidden>
+        <p class="cornerhint mono">drag the corners onto the page's corners</p>
+        <div class="cornerwrap" id="cornerwrap">
+          <canvas id="cornercv"></canvas>
+          <svg id="cornersvg" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+            <polygon id="cornerpoly"/>
+            <circle class="h" data-i="0"/><circle class="h" data-i="1"/><circle class="h" data-i="2"/><circle class="h" data-i="3"/>
+          </svg>
+        </div>
+        <div class="cornerbar">
+          <button id="cornerfull" class="btn ghost" type="button">use the whole frame</button>
+          <span class="grow"></span>
+          <button id="cornercancel" class="btn ghost" type="button">cancel</button>
+          <button id="cornerapply" class="btn primary" type="button">apply</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer class="foot mono">
+  Scancat · a sibling of <a href="https://nipunbatra.github.io/redacat/">Redacat</a> and
+  <a href="https://nipunbatra.github.io/diffcat/">Diffcat</a> ·
+  <a href="https://github.com/nipunbatra/scancat">source</a> · MIT
+</footer>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

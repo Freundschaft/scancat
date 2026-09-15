@@ -1,0 +1,14 @@
+{
+  "name": "scancat-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fixtures": "node make-fixtures.mjs",
+    "unit": "node unit.mjs",
+    "test": "node unit.mjs && node run-tests.mjs"
+  },
+  "dependencies": {
+    "mupdf": "1.28.0",
+    "puppeteer-core": "^23.0.0"
+  }
+}

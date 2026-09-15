@@ -1,0 +1,8 @@
+{
+  "name": "scancat",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Scan documents with your webcam, entirely in the browser: live edge detection, perspective correction, scanner-style cleanup, multi-page PDF. Nothing leaves your device.",
+  "license": "MIT",
+  "homepage": "https://nipunbatra.github.io/scancat/"
+}
