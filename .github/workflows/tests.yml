@@ -20,7 +20,7 @@ jobs:
         run: npm install
       - name: Unit tests
         working-directory: tests
-        run: node unit.mjs
+        run: npm run unit
       - name: Generate the fake-camera fixture
         working-directory: tests
         run: node make-fixtures.mjs

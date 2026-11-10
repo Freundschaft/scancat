@@ -56,7 +56,9 @@
       <svg id="overlay" preserveAspectRatio="none" aria-hidden="true" focusable="false">
         <polygon id="quad" points=""/>
         <g id="dots"></g>
+        <g id="multiquads"></g>
       </svg>
+      <div id="zoomhint" class="zoomhint mono" hidden>drag to reposition</div>
       <div id="flash" aria-hidden="true"></div>
       <div class="pillrow">
         <div id="pill" class="pill mono" role="status" aria-live="polite">starting camera…</div>
@@ -68,13 +70,25 @@
     </div>
     <div class="controls">
       <button id="shutter" class="shutter" type="button" aria-label="Capture page (space)" title="Capture (space)"><span></span></button>
+      <button id="preparecapture" class="btn ghost small" type="button" aria-pressed="false" title="Waits for a detected page and three seconds without visible movement">Flatten &amp; capture</button>
+      <button id="burstcapture" class="btn ghost small" type="button" aria-pressed="false" title="Two seconds to get ready, then records frames for six seconds and combines aligned detail. Keep holding the paper stretched.">Combine frames (8s)</button>
+      <button id="timedcapture" class="btn ghost small" type="button" aria-pressed="false" title="Capture after five seconds, even while you hold the paper. Press T again to cancel.">Capture in 5s (T)</button>
       <div class="ctls">
         <label class="ctl"><span class="k mono">camera</span><select id="camera" aria-label="Camera"></select></label>
+        <label class="ctl"><span class="k mono">resolution</span>
+          <select id="resolution" aria-label="Stream resolution">
+            <option value="max">highest available</option>
+            <option value="1280x720">1280 × 720</option>
+            <option value="1920x1080">1920 × 1080</option>
+            <option value="2560x1440">2560 × 1440</option>
+            <option value="3840x2160">3840 × 2160</option>
+          </select></label>
         <label class="ctl"><span class="k mono">look</span>
           <select id="mode" aria-label="Enhancement">
             <option value="color">colour</option>
             <option value="gray">greyscale</option>
             <option value="bw">black &amp; white</option>
+            <option value="receipt">receipt (faint print)</option>
             <option value="original">original</option>
           </select></label>
         <label class="ctl"><span class="k mono">page</span>
@@ -83,12 +97,40 @@
             <option value="a4">A4</option>
             <option value="letter">Letter</option>
           </select></label>
+        <div class="ctl zoomctl" role="group" aria-label="Camera zoom" title="Zoom the captured area; drag the camera preview to reposition it">
+          <span class="k mono">zoom</span>
+          <input id="zoom" type="range" min="1" max="4" step="0.25" value="1" aria-label="Camera zoom">
+          <output id="zoomvalue" class="mono" for="zoom">1×</output>
+          <button id="zoomreset" class="zoomreset mono" type="button" disabled>reset</button>
+        </div>
         <label class="ctl chk"><input type="checkbox" id="auto" checked> <span>auto-capture when steady</span></label>
+        <label class="ctl chk" title="Leave a gap between receipts. One capture makes a separate page for each outline."><input type="checkbox" id="multiple"> <span>multiple receipts</span></label>
+        <label class="ctl zoomctl" title="Sharpens captured pages using the receipt look">
+          <span class="k mono">receipt detail</span>
+          <input id="sharpness" type="range" min="0" max="2" step="0.25" value="0.5" aria-label="Receipt sharpening">
+          <output id="sharpnessvalue" class="mono" for="sharpness">0.5×</output>
+        </label>
+        <label class="ctl zoomctl" title="Darkens faint print on captured receipts">
+          <span class="k mono">receipt contrast</span>
+          <input id="receiptcontrast" type="range" min="1" max="8" step="0.5" value="3" aria-label="Receipt contrast">
+          <output id="receiptcontrastvalue" class="mono" for="receiptcontrast">3</output>
+        </label>
+        <div id="focusctl" class="ctl zoomctl" role="group" aria-label="Camera focus" hidden>
+          <span class="k mono">focus</span>
+          <input id="focus" type="range" aria-label="Manual camera focus">
+          <button id="focusauto" class="zoomreset mono" type="button">auto</button>
+        </div>
+        <div id="exposurectl" class="ctl zoomctl" role="group" aria-label="Camera exposure" hidden><span class="k mono">exposure</span>
+          <input id="exposure" type="range" aria-label="Camera exposure">
+          <output id="exposurevalue" class="mono" for="exposure"></output>
+          <button id="exposureauto" class="zoomreset mono" type="button" hidden>auto</button>
+        </div>
         <label class="ctl chk"><input type="checkbox" id="sound" checked> <span>shutter sound</span></label>
       </div>
       <span id="res" class="mono res" aria-label="Camera resolution"></span>
     </div>
-    <p class="keys mono">space captures · ⌫ removes the last page · ⌘S / ctrl+S downloads the PDF</p>
+    <p id="resolutionnote" class="keys mono" role="status" hidden></p>
+    <p class="keys mono">space captures · T captures in 5 seconds · ⌫ removes the last page · ⌘S / ctrl+S downloads the PDF</p>
   </div>
 
   <aside class="tray sheet" id="tray" aria-label="Scanned pages">
@@ -142,6 +184,7 @@
           <option value="color">colour</option>
           <option value="gray">greyscale</option>
           <option value="bw">black &amp; white</option>
+          <option value="receipt">receipt (faint print)</option>
           <option value="original">original</option>
         </select>
         <button id="edcorners" class="btn ghost" type="button">adjust corners</button>

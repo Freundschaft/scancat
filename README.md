@@ -24,6 +24,25 @@ impossible, so the page couldn't upload a frame even if it wanted to.
 - **Auto-capture.** Hold still for about two-thirds of a second and the page
   is captured; it re-arms when you swap in the next page. Or press space (or
   the big red button) whenever you like.
+- **Flatten & capture.** Press once, straighten the receipt by hand, then move
+  your hands clear. Capture waits for a detected page and three seconds of
+  stillness; visible movement or a lost outline restarts the countdown. Press
+  again to cancel. This uses image motion, not hand recognition.
+- **Five-second timer.** Press **T** or “Capture in 5s” and keep holding the
+  receipt stretched. Capture fires after five seconds without waiting for
+  stillness or hands to leave. Press T again to cancel. Changing camera
+  settings, opening the editor, or leaving the tab cancels the timer.
+- **Combine frames.** An eight-second burst gives two seconds to get ready,
+  then samples frames while you keep holding the paper. Up to five sharp
+  frames are straightened, locally aligned and averaged where they agree to
+  reduce noise. Disagreeing regions keep the sharpest source; this does not
+  invent missing text or increase sensor resolution. Everything stays local.
+  Changing corners afterwards uses the retained sharpest original frame.
+- **Multiple receipts.** Enable the checkbox to outline up to eight separated
+  receipts. One shutter press (or the T timer) produces a separate scan for
+  every detected receipt from the same camera frame. Leave space between
+  papers; touching/overlapping receipts may merge. Frame combining is available
+  in single-receipt mode.
 - **Straightened and cleaned.** A perspective warp maps the quad onto a
   rectangle at the camera's native resolution. Then uneven lighting is
   flattened (max-filter → local mean → per-pixel gain) so paper reads as flat
@@ -37,6 +56,27 @@ impossible, so the page couldn't upload a frame even if it wanted to.
   page, ⌘S downloads.
 - **Camera picker** for machines with more than one camera (built-in, iPhone,
   USB), remembered across visits.
+- **Stream resolution.** Request the highest available resolution or choose
+  720p, 1080p, 1440p, or 4K. The actual stream dimensions are shown beside the
+  controls; unsupported requests keep the previous setting. Linked-phone
+  cameras may be limited by their Windows driver or connection. Digital zoom
+  crops the available pixels, so it reduces scan resolution.
+  Resolution choices are remembered per camera across restarts.
+- **Zoom and pan.** Zoom up to 4× and drag the live preview to frame a smaller
+  portion of the camera image. Edge detection and capture use exactly the area
+  shown in the preview.
+- **Receipts.** Choose “receipt (faint print)” for narrow or folded receipts
+  on a darker background. This also preserves faint print during cleanup.
+  On supported cameras, move the exposure slider left to protect bright paper;
+  “auto” restores automatic exposure. Cleanup is applied to captured pages,
+  while exposure changes the live camera feed.
+  “Receipt detail” adjusts sharpening of receipt scans (0 disables it).
+  “Receipt contrast” darkens faint print independently of sharpening.
+  Supported cameras also expose manual focus with an “auto” reset; use this
+  to focus on small print before capture.
+  Exposure and focus choices are remembered separately for each camera and
+  restored when it starts. The exposure readout shows “locked” for manual
+  exposure and “auto” when the camera is adjusting it.
 
 ## Running locally / self-hosting
 

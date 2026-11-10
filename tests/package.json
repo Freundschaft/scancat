@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "fixtures": "node make-fixtures.mjs",
-    "unit": "node unit.mjs",
-    "test": "node unit.mjs && node run-tests.mjs"
+    "unit": "node unit.mjs && node resolution.mjs && node autocapture.mjs && node fusion.mjs && node timer.mjs",
+    "test": "npm run unit && node run-tests.mjs"
   },
   "dependencies": {
     "mupdf": "1.28.0",

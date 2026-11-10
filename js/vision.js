@@ -169,7 +169,7 @@ export function houghLines(edge, gx, gy, w, h, opts = {}) {
   if (!edgeCount) return [];
   let max = 0;
   for (let i = 0; i < acc.length; i++) if (acc[i] > max) max = acc[i];
-  const thr = Math.max(Math.round(max * 0.18), Math.round(Math.min(w, h) * 0.08));
+  const thr = Math.max(Math.round(max * (opts.lineThreshold ?? 0.18)), Math.round(Math.min(w, h) * (opts.lineLength ?? 0.08)));
   const cands = [];
   for (let r = 0; r < nR; r++) {
     for (let t = 0; t < 180; t++) {
@@ -273,7 +273,7 @@ export function bestQuad(lines, edge, w, h, opts = {}) {
   const margin = (opts.margin ?? 0.04) * Math.max(w, h);
   const sup = dilate(edge, w, h, 2);
   const K = Math.min(lines.length, opts.maxLines ?? 18);
-  const minSep = Math.min(w, h) * 0.12;
+  const minSep = Math.min(w, h) * (opts.minSep ?? 0.12);
   const pairs = [];
   for (let i = 0; i < K; i++) {
     for (let j = i + 1; j < K; j++) {
@@ -333,10 +333,114 @@ export function detectDocument(data, w, h, opts = {}) {
   const gray = grayFromRGBA(data, w, h);
   const e = edges(gray, w, h, opts);
   const lines = houghLines(e.edge, e.gx, e.gy, w, h, opts);
-  if (lines.length < 4) return null;
-  const q = bestQuad(lines, e.edge, w, h, opts);
+  if (lines.length < 4) return opts.receipt ? receiptRegion(gray, w, h) : null;
+  const q = (opts.receipt ? receiptRegion(gray, w, h) : null) || bestQuad(lines, e.edge, w, h, opts);
   if (q) q.lines = lines.length;
   return q;
+}
+
+// Receipts often have curved or folded borders, so four straight Hough lines
+// can be absent. Fall back to a connected bright-paper region on a darker desk.
+function receiptRegion(gray, w, h, all = false) {
+  let best = null;
+  const candidates = [];
+  const bright = percentile(gray, 0.97, 255);
+  for (const threshold of [Math.max(70, bright * 0.72), Math.max(100, bright * 0.87), Math.max(140, bright * 0.96)]) {
+    const seen = new Uint8Array(w * h), queue = new Int32Array(w * h);
+    for (let start = 0; start < gray.length; start++) {
+      if (seen[start] || gray[start] < threshold) continue;
+      let head = 0, tail = 1; queue[0] = start; seen[start] = 1;
+      const points = [];
+      while (head < tail) {
+        const i = queue[head++], x = i % w, y = Math.floor(i / w);
+        let border = false;
+        for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+          const xx = x + dx, yy = y + dy, j = yy * w + xx;
+          if (xx < 0 || xx >= w || yy < 0 || yy >= h || gray[j] < threshold) { border = true; continue; }
+          if (!seen[j]) { seen[j] = 1; queue[tail++] = j; }
+        }
+        if (border) points.push([x, y]);
+      }
+      if (tail < w * h * 0.008 || tail > w * h * 0.7 || points.length < 4) continue;
+      points.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      const cross = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+      const half = (pts) => {
+        const hull = [];
+        for (const p of pts) { while (hull.length > 1 && cross(hull.at(-2), hull.at(-1), p) <= 0) hull.pop(); hull.push(p); }
+        return hull;
+      };
+      const lower = half(points), upper = half([...points].reverse());
+      const boundary = [...lower.slice(0, -1), ...upper.slice(0, -1)];
+      const core = enclosingReceiptBox(boundary, 0);
+      if (core.length !== 4 || core.some(([x, y]) => x < 2 || y < 2 || x >= w - 2 || y >= h - 2)) continue;
+      const hull = enclosingReceiptBox(boundary).map(([x, y]) => [Math.max(0, Math.min(w - 1, x)), Math.max(0, Math.min(h - 1, y))]);
+      const area = Math.abs(polyArea(core)), fill = tail / area;
+      if (fill < 0.7 || fill > 1.25) continue;
+      const sides = hull.map((p, i) => Math.hypot(p[0] - hull[(i + 1) % 4][0], p[1] - hull[(i + 1) % 4][1]));
+      // Small tickets and till receipts may be almost square, not long strips.
+      if (Math.min(...sides) < 8) continue;
+      const score = Math.min(1, fill) * (0.35 + 0.65 * Math.sqrt(area / (w * h)));
+      const candidate = { corners: orderCorners(hull), score, support: Math.min(1, fill), areaFrac: area / (w * h) };
+      candidates.push(candidate);
+      if (!best || score > best.score) best = candidate;
+    }
+  }
+  if (!all) return best;
+  // The same paper appears at several brightness thresholds. Keep one outline
+  // per region, preferring the strongest complete region over its fragments.
+  const bounds = q => {
+    const xs = q.corners.map(p => p[0]), ys = q.corners.map(p => p[1]);
+    return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+  };
+  const found = [];
+  for (const q of candidates.sort((a, b) => b.score - a.score)) {
+    const a = bounds(q);
+    const duplicate = found.some(other => {
+      const b = bounds(other), intersection = Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0)) * Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
+      const smaller = Math.min((a.x1 - a.x0) * (a.y1 - a.y0), (b.x1 - b.x0) * (b.y1 - b.y0));
+      return intersection > smaller * 0.5;
+    });
+    if (!duplicate) found.push(q);
+    if (found.length === 8) break;
+  }
+  return found.sort((a, b) => bounds(a).x0 - bounds(b).x0);
+}
+
+/** Separate, non-overlapping bright paper regions, up to eight per frame. */
+export function detectDocuments(data, w, h, opts = {}) {
+  const regions = receiptRegion(grayFromRGBA(data, w, h), w, h, true);
+  if (regions.length) return regions;
+  const q = detectDocument(data, w, h, opts);
+  return q ? [q] : [];
+}
+
+/** Minimum-area enclosing rectangle, with a small border for downsampling error.
+ * Unlike deleting hull vertices, this never cuts across a folded paper edge. */
+export function enclosingReceiptBox(points, padding = 2) {
+  if (points.length < 3) return [];
+  let best = null, bestArea = Infinity;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i], b = points[(i + 1) % points.length];
+    const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (!length) continue;
+    const ux = (b[0] - a[0]) / length, uy = (b[1] - a[1]) / length;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [x, y] of points) {
+      const u = x * ux + y * uy, v = -x * uy + y * ux;
+      x0 = Math.min(x0, u); x1 = Math.max(x1, u);
+      y0 = Math.min(y0, v); y1 = Math.max(y1, v);
+    }
+    const area = (x1 - x0) * (y1 - y0);
+    if (area >= bestArea) continue;
+    bestArea = area;
+    // Folded/darker ends can fall below the paper threshold. Leave a little
+    // extra space along the long axis rather than stopping at the bright ink area.
+    const px = padding + (padding && x1 - x0 > y1 - y0 ? (x1 - x0) * 0.025 : 0);
+    const py = padding + (padding && y1 - y0 > x1 - x0 ? (y1 - y0) * 0.025 : 0);
+    best = [[x0 - px, y0 - py], [x1 + px, y0 - py], [x1 + px, y1 + py], [x0 - px, y1 + py]]
+      .map(([u, v]) => [u * ux - v * uy, u * uy + v * ux]);
+  }
+  return best ? orderCorners(best) : [];
 }
 
 /* ------------------------------------------------------------------ */
@@ -487,14 +591,31 @@ function stretchParams(lum) {
   return { black, scale: 255 / Math.max(1, white - black) };
 }
 
-export const MODES = ["color", "gray", "bw", "original"];
+export const MODES = ["color", "gray", "bw", "receipt", "original"];
 
 /** Returns a new RGBA buffer with the chosen look applied. */
-export function enhance(data, w, h, mode) {
+export function enhance(data, w, h, mode, sharpness = 0.5, receiptContrast = 3) {
   const n = w * h;
   const out = new Uint8ClampedArray(n * 4);
   if (mode === "original" || !MODES.includes(mode)) { out.set(data); return out; }
   const gray = grayFromRGBA(data, w, h);
+  if (mode === "receipt") {
+    // Estimate paper around thin thermal print, then expand local ink contrast.
+    // Unlike the hard white point / binary threshold, retain faint grey strokes.
+    const bg = boxMean(maxFilter(gray, w, h, Math.max(3, Math.round(Math.min(w, h) / 100))), w, h, Math.max(8, Math.round(Math.min(w, h) / 24)));
+    const local = boxMean(gray, w, h, Math.max(3, Math.round(Math.min(w, h) / 150)));
+    for (let i = 0, j = 0; i < n; i++, j += 4) {
+      // Fine strokes differ from their immediate surroundings; broad creases
+      // mostly vary over a larger area. Give fine detail more weight while
+      // retaining a weaker paper-relative term for solid logos and bold type.
+      const broadInk = Math.max(0, 1 - gray[i] / Math.max(30, bg[i]));
+      const fineInk = Math.max(0, 1 - gray[i] / Math.max(30, local[i]) - 0.025);
+      const ink = Math.max(broadInk * 0.35, fineInk * 3);
+      const v = 255 * Math.exp(-3 * Math.max(1, Math.min(8, Number(receiptContrast) || 3)) * ink);
+      out[j] = out[j + 1] = out[j + 2] = v; out[j + 3] = 255;
+    }
+    return sharpen(out, w, h, sharpness);
+  }
   const gain = paperGain(gray, w, h);
   const lum = new Float32Array(n);
   for (let i = 0; i < n; i++) lum[i] = Math.min(255, gray[i] * gain[i]);
@@ -522,6 +643,22 @@ export function enhance(data, w, h, mode) {
   for (let i = 0, j = 0; i < n; i++, j += 4) {
     const v = lum[i] < Math.min(mean[i] - 22, 205) ? 0 : 255;
     out[j] = out[j + 1] = out[j + 2] = v; out[j + 3] = 255;
+  }
+  return out;
+}
+
+/** Thresholded unsharp mask: strengthen strokes without boosting tiny paper noise. */
+export function sharpen(data, w, h, amount = 1) {
+  amount = Math.max(0, Math.min(2, Number(amount) || 0));
+  if (!amount) return new Uint8ClampedArray(data);
+  const gray = grayFromRGBA(data, w, h), soft = blur5(gray, w, h);
+  const out = new Uint8ClampedArray(data);
+  for (let i = 0, j = 0; i < gray.length; i++, j += 4) {
+    const detail = gray[i] - soft[i];
+    if (Math.abs(detail) < 2) continue;
+    // Cap the correction to keep strong wrinkle edges from acquiring large halos.
+    const correction = Math.max(-36, Math.min(36, detail * amount));
+    out[j] += correction; out[j + 1] += correction; out[j + 2] += correction;
   }
   return out;
 }

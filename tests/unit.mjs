@@ -70,6 +70,99 @@ test("no quad when the page runs off the frame", () => {
 });
 
 console.log("warp");
+test("receipt mode detects a narrow strip below the normal area threshold", () => {
+  const w = 384, h = 216, corners = [[70, 55], [290, 65], [289, 80], [69, 70]];
+  const frame = renderFrame({ w, h, corners, hand: false, docW: 300, docH: 40, gradient: 0.1 });
+  const q = V.detectDocument(frame.data, w, h, { receipt: true, minArea: 0.015, minSep: 0.04, lineThreshold: 0.06, lineLength: 0.03, maxLines: 24 });
+  assert(q, "receipt not found");
+  // Includes the intentional 2.5% end margin plus the downsampled border.
+  assert(cornerError(q.corners, corners) < 12, `receipt outline is inaccurate: ${cornerError(q.corners, corners)}`);
+});
+
+test("receipt enhancement keeps faint print visible across uneven paper lighting", () => {
+  const w = 200, h = 100, d = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const paper = 180 + x * 0.3, ink = y >= 49 && y <= 50;
+    const i = (y * w + x) * 4;
+    d[i] = d[i + 1] = d[i + 2] = paper * (ink ? 0.9 : 1); d[i + 3] = 255;
+  }
+  const out = V.enhance(d, w, h, "receipt");
+  const gentle = V.enhance(d, w, h, "receipt", 0, 2);
+  const stronger = V.enhance(d, w, h, "receipt", 0, 6);
+  assert(stronger[(50 * w + 100) * 4] < gentle[(50 * w + 100) * 4], "receipt contrast must darken faint strokes");
+  for (const x of [20, 100, 180]) {
+    const paper = out[(40 * w + x) * 4], ink = out[(50 * w + x) * 4];
+    assert(paper > 240 && paper - ink > 40, `faint ink lost at ${x}: ${paper}, ${ink}`);
+  }
+});
+
+test("receipt mode detects a small nearly square ticket", () => {
+  const w = 384, h = 216, corners = [[180, 110], [238, 110], [238, 156], [180, 156]];
+  const frame = renderFrame({ w, h, corners, hand: false, docW: 80, docH: 65, bgLevel: 40, gradient: 0.15 });
+  const q = V.detectDocument(frame.data, w, h, { receipt: true });
+  assert(q, "small square receipt missing");
+  assert(cornerError(q.corners, corners) < 10, "small receipt outline inaccurate");
+});
+
+test("multiple receipt detection returns separate outlines without brightness-threshold duplicates", () => {
+  const w = 384, h = 216, data = new Uint8ClampedArray(w * h * 4);
+  const papers = [[35, 40, 85, 160], [160, 80, 230, 140], [280, 35, 340, 180]];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const paper = papers.some(([x0, y0, x1, y1]) => x >= x0 && x <= x1 && y >= y0 && y <= y1);
+    const v = paper ? 220 : 45, i = (y * w + x) * 4;
+    data[i] = data[i + 1] = data[i + 2] = v; data[i + 3] = 255;
+  }
+  const found = V.detectDocuments(data, w, h, { receipt: true });
+  assert(found.length === 3, `expected three receipts, found ${found.length}`);
+  for (let i = 0; i < papers.length; i++) {
+    const [x0, y0, x1, y1] = papers[i];
+    assert(cornerError(found[i].corners, [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]) < 8, `receipt ${i + 1} outline inaccurate`);
+  }
+  data.fill(45);
+  assert(V.detectDocuments(data, w, h, { receipt: true }).length === 0, "blank desk produces phantom receipts");
+});
+
+test("receipt crop encloses every folded edge instead of cutting off protrusions", () => {
+  const boundary = [[30, 20], [110, 25], [120, 30], [115, 42], [80, 39], [65, 46], [25, 35]];
+  const box = V.enclosingReceiptBox(boundary);
+  assert(box.length === 4, "missing enclosing box");
+  for (const [x, y] of boundary) {
+    let sign = 0;
+    for (let i = 0; i < 4; i++) {
+      const a = box[i], b = box[(i + 1) % 4];
+      const side = Math.sign((b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]));
+      if (sign && side) assert(sign === side, `paper edge ${x},${y} lies outside crop`);
+      if (side) sign = side;
+    }
+  }
+});
+
+test("sharpening increases soft stroke contrast and leaves flat paper unchanged", () => {
+  const w = 32, h = 24, d = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const v = x === 15 ? 100 : x === 14 || x === 16 ? 140 : x === 13 || x === 17 ? 190 : 220;
+    const i = (y * w + x) * 4; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255;
+  }
+  const out = V.sharpen(d, w, h, 1);
+  const at = (buf, x) => buf[(12 * w + x) * 4];
+  assert(at(out, 15) < at(d, 15), "soft stroke was not strengthened");
+  assert(at(out, 3) === at(d, 3), "flat paper changed");
+  assert(out.every((v, i) => i % 4 !== 3 || v === 255), "alpha changed");
+  assert(V.sharpen(d, w, h, 0).every((v, i) => v === d[i]), "off must preserve pixels");
+});
+
+test("receipt cleanup separates fine print from a broad crease shadow", () => {
+  const w = 200, h = 100, data = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const paper = 220 - 40 * Math.exp(-(((y - 55) / 12) ** 2));
+    const v = paper * (y >= 29 && y <= 30 && x > 20 && x < 180 ? 0.85 : 1);
+    const i = (y * w + x) * 4; data[i] = data[i + 1] = data[i + 2] = v; data[i + 3] = 255;
+  }
+  const out = V.enhance(data, w, h, "receipt", 0, 3);
+  assert(out[(55 * w + 100) * 4] > 190, "broad shadow was treated as dark ink");
+  assert(out[(30 * w + 100) * 4] < 150, "fine print was not strengthened");
+});
+
 test("homography round-trips the four corners", () => {
   const src = [[0, 0], [100, 0], [100, 150], [0, 150]];
   const dst = [[30, 20], [220, 40], [240, 300], [10, 280]];

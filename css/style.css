@@ -216,7 +216,13 @@ select.btn { appearance: auto; padding-right: 0.4rem; }
   background: #1a1a18;
   overflow: hidden;
 }
-#video { display: block; width: 100%; height: 100%; object-fit: fill; background: #1a1a18; }
+#video {
+  display: block; width: 100%; height: 100%; object-fit: fill; background: #1a1a18;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.viewport.zoomed { cursor: grab; touch-action: none; }
+.viewport.zoomed.dragging { cursor: grabbing; }
 
 #overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 #quad {
@@ -239,6 +245,19 @@ select.btn { appearance: auto; padding-right: 0.4rem; }
 }
 #flash.go { animation: flash 0.35s ease-out; }
 @keyframes flash { 0% { opacity: 0.9; } 100% { opacity: 0; } }
+
+.zoomhint {
+  position: absolute;
+  top: 0.75rem; right: 0.75rem;
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+  background: rgba(20, 20, 18, 0.7);
+  color: var(--paper);
+  padding: 0.3rem 0.5rem;
+  border-radius: 2px;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+}
 
 .pillrow {
   position: absolute;
@@ -280,6 +299,24 @@ select.btn { appearance: auto; padding-right: 0.4rem; }
   color: var(--ink);
   max-width: 200px;
 }
+.zoomctl { gap: 0.35rem; }
+.zoomctl input[type="range"] {
+  width: 92px;
+  accent-color: var(--ink);
+  cursor: pointer;
+}
+.zoomctl output { min-width: 2.7em; font-size: 0.72rem; color: var(--ink); }
+.zoomreset {
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  background: transparent;
+  color: var(--grey);
+  font-size: 0.66rem;
+  padding: 0.1rem;
+  cursor: pointer;
+}
+.zoomreset:hover:not(:disabled) { color: var(--stamp); border-color: var(--stamp); }
+.zoomreset:disabled { opacity: 0.35; cursor: default; }
 .ctl.chk { gap: 0.35rem; color: var(--grey); }
 .ctl.chk input { accent-color: var(--ink); }
 .res { font-size: 0.66rem; color: var(--grey); letter-spacing: 0.06em; }

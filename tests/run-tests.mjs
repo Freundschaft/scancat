@@ -205,6 +205,21 @@ test("black & white look re-renders pages as two-level images", async () => {
   await until(async () => !(await state(page)).busy, "idle again", 20000);
 });
 
+test("digital zoom crops the detected and captured camera region", async () => {
+  const { page } = global.live;
+  await page.$eval("#zoom", (el) => { el.value = "2"; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  assertEq(await page.$eval("#zoomvalue", (el) => el.value), "2×", "zoom readout");
+  const before = (await state(page)).n;
+  await page.keyboard.press("Space");
+  await until(async () => (await state(page)).n === before + 1, "zoomed capture");
+  await until(async () => !(await state(page)).busy, "zoomed processing done");
+  const captured = (await state(page)).pages.at(-1);
+  assertEq(captured.fw, POSES.w / 2, "zoomed frame width");
+  assertEq(captured.fh, POSES.h / 2, "zoomed frame height");
+  await page.click("#zoomreset");
+  assertEq(await page.$eval("#zoomvalue", (el) => el.value), "1×", "reset zoom readout");
+});
+
 test("corner editor: 'use the whole frame' re-warps the page to the full camera frame", async () => {
   const { page } = global.live;
   const st = await state(page);
@@ -297,6 +312,43 @@ test("screenshots for the record (landing, phone width)", async () => {
   assert(!overflow, "page must not scroll horizontally at phone width");
   await ctx.page.screenshot({ path: path.join(HERE, "shot-phone.png"), fullPage: true });
   await ctx.page.close();
+});
+
+test("multiple receipts, T timer and aligned-frame capture work through the real UI", async () => {
+  const context = await browser.createBrowserContext();
+  const page = await context.newPage();
+  try {
+    await page.goto(BASE, { waitUntil: "networkidle0" });
+    await page.evaluate(async () => {
+      const canvas = document.createElement("canvas"); canvas.width = 1280; canvas.height = 720;
+      const ctx = canvas.getContext("2d"); ctx.fillStyle = "#303030"; ctx.fillRect(0, 0, 1280, 720);
+      for (const [x, y, w, h] of [[150, 160, 230, 390], [710, 240, 310, 240]]) {
+        ctx.fillStyle = "#eeeeea"; ctx.fillRect(x, y, w, h); ctx.fillStyle = "#202020"; ctx.font = "18px monospace";
+        for (let i = 0; i < 8; i++) ctx.fillText(`Item ${i} 12.50`, x + 20, y + 35 + i * 22);
+      }
+      setInterval(() => { ctx.fillStyle = "#303030"; ctx.fillRect(0, 0, 2, 2); }, 100);
+      Object.defineProperty(navigator.mediaDevices, "getUserMedia", { value: async () => canvas.captureStream(10) });
+      Object.defineProperty(navigator.mediaDevices, "enumerateDevices", { value: async () => [] });
+      window.__scancat.S.auto = false; window.__scancat.S.mode = "receipt";
+      document.getElementById("auto").checked = false; document.getElementById("mode").value = "receipt";
+      await window.__scancat.startCamera();
+    });
+    await page.click("#multiple");
+    await until(() => page.evaluate(() => window.__scancat.S.det.quads?.length === 2), "two receipt outlines");
+    await page.click("#shutter");
+    await until(async () => (await state(page)).n === 2 && !(await state(page)).busy, "two separate receipt scans");
+    await page.focus("#sharpness"); // T also works after adjusting a camera slider.
+    const start = Date.now(); await page.keyboard.press("t");
+    await until(async () => (await state(page)).n === 4 && !(await state(page)).busy, "two timed scans", 9000);
+    assert(Date.now() - start >= 4900, "T fired before the five-second timer");
+    await page.click("#multiple");
+    await page.click("#burstcapture");
+    await until(async () => (await state(page)).n === 5 && !(await state(page)).busy, "combined-frame scan", 25000);
+    const fused = await page.evaluate(() => {
+      const p = window.__scancat.S.pages.at(-1); return { frames: p.fusedFrames, raw: !!p.fusionFrame, original: !!p.frame };
+    });
+    assert(fused.frames >= 2 && fused.raw && fused.original, "burst did not preserve a composite and the sharpest original");
+  } finally { await context.close(); }
 });
 
 /* ---------- run ---------- */
