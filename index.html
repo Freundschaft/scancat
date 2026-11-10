@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' blob: data:; media-src 'self' blob: mediastream:; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' blob: data:; media-src 'self' blob: mediastream:; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="description" content="Scancat — scan documents with your webcam, entirely in the browser. Live edge detection, perspective correction, scanner-style cleanup, multi-page PDF. No uploads, no servers, no analytics.">
 <title>Scancat — your webcam is a scanner, nothing leaves your device</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
@@ -105,6 +105,7 @@
         </div>
         <label class="ctl chk"><input type="checkbox" id="auto" checked> <span>auto-capture when steady</span></label>
         <label class="ctl chk" title="Leave a gap between receipts. One capture makes a separate page for each outline."><input type="checkbox" id="multiple"> <span>multiple receipts</span></label>
+        <label class="ctl chk" title="After capture, use local text detection to rotate each scan upright when confident."><input type="checkbox" id="autoorient" checked> <span>auto-orient text</span></label>
         <label class="ctl zoomctl" title="Sharpens captured pages using the receipt look">
           <span class="k mono">receipt detail</span>
           <input id="sharpness" type="range" min="0" max="2" step="0.25" value="0.5" aria-label="Receipt sharpening">
@@ -130,7 +131,7 @@
       <span id="res" class="mono res" aria-label="Camera resolution"></span>
     </div>
     <p id="resolutionnote" class="keys mono" role="status" hidden></p>
-    <p class="keys mono">space captures · T captures in 5 seconds · ⌫ removes the last page · ⌘S / ctrl+S downloads the PDF</p>
+    <p class="keys mono">space captures · T captures in 5 seconds · ⌫ removes the last page · ⌘S / ctrl+S downloads the PDF ZIP</p>
   </div>
 
   <aside class="tray sheet" id="tray" aria-label="Scanned pages">
@@ -142,8 +143,8 @@
     <p id="trayhint" class="trayhint">Captured pages stack up here. Click a page to rotate it, fix its
     corners, or delete it; drag to reorder.</p>
     <div class="tray-foot">
-      <button id="pdf" class="btn primary" type="button" disabled>Download PDF</button>
-      <button id="jpgs" class="btn ghost" type="button" disabled title="Download every page as a JPEG">JPEGs</button>
+      <button id="pdf" class="btn primary" type="button" disabled title="ZIP with a separate PDF for each receipt">PDFs ZIP</button>
+      <button id="jpgs" class="btn ghost" type="button" disabled title="ZIP with a separate JPEG for each receipt">JPEGs ZIP</button>
     </div>
   </aside>
 </section>
@@ -176,9 +177,11 @@
   <div class="modal-card sheet">
     <div class="modal-bar">
       <span id="edtitle" class="mono">page 1</span>
+      <span id="edorientation" class="mono hint" role="status" aria-live="polite"></span>
       <div class="modal-acts">
         <button id="edrotl" class="btn ghost" type="button" title="Rotate left">⟲</button>
         <button id="edrotr" class="btn ghost" type="button" title="Rotate right">⟳</button>
+        <button id="edautorotate" class="btn ghost" type="button" title="Use local text detection to find the upright orientation">auto rotate</button>
         <select id="edmode" class="btn ghost" aria-label="Look for this page">
           <option value="">look: as set</option>
           <option value="color">colour</option>

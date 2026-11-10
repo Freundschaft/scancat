@@ -2,7 +2,9 @@
 
 import * as V from "./vision.js";
 import { buildPdf } from "./pdf.js";
+import { buildZip } from "./zip.js";
 import { SettledCapture, frameMotion } from "./autocapture.js";
+import { detectOrientation } from "./orientation.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -20,6 +22,7 @@ const S = {
   sharpness: 0.5,
   receiptContrast: 3,
   multi: false,
+  autoOrient: true,
   cameraPrefs: {}, starting: false,
   busy: 0, editing: null, corner: null,
   det: { smooth: null, stable: 0, lost: 99, armed: true, lastCap: null, score: 0, support: 0, ms: 0, w: 0, h: 0 },
@@ -35,6 +38,7 @@ function loadPrefs() {
     if (typeof p.auto === "boolean") S.auto = p.auto;
     if (typeof p.sound === "boolean") S.sound = p.sound;
     if (typeof p.multi === "boolean") S.multi = p.multi;
+    if (typeof p.autoOrient === "boolean") S.autoOrient = p.autoOrient;
     if (typeof p.deviceId === "string") S.deviceId = p.deviceId;
     if (Number.isFinite(p.sharpness)) S.sharpness = Math.max(0, Math.min(2, p.sharpness));
     if (Number.isFinite(p.receiptContrast)) S.receiptContrast = Math.max(1, Math.min(8, p.receiptContrast));
@@ -43,7 +47,7 @@ function loadPrefs() {
 }
 function savePrefs() {
   try {
-    localStorage.setItem("scancat:prefs", JSON.stringify({ mode: S.mode, pageSize: S.pageSize, auto: S.auto, sound: S.sound, deviceId: S.deviceId, sharpness: S.sharpness, receiptContrast: S.receiptContrast, cameraPrefs: S.cameraPrefs, multi: S.multi }));
+    localStorage.setItem("scancat:prefs", JSON.stringify({ mode: S.mode, pageSize: S.pageSize, auto: S.auto, sound: S.sound, deviceId: S.deviceId, sharpness: S.sharpness, receiptContrast: S.receiptContrast, cameraPrefs: S.cameraPrefs, multi: S.multi, autoOrient: S.autoOrient }));
   } catch { /* ignore */ }
 }
 
@@ -517,7 +521,7 @@ async function finishBurst(state) {
     if (result.referenceId !== best.frameId) throw new Error("Burst reference frame changed");
     const page = { id: ++S.seq, fw: best.fw, fh: best.fh, frame: best.frame, frameReady: Promise.resolve(best.frame),
       corners: best.corners, fusionCorners: best.corners.map(p => [...p]), fusionFrame, fusedFrames: result.usedFrames,
-      rot: 0, mode: null, out: null, url: "", w: 0, h: 0, cropped: true };
+      rot: 0, mode: null, out: null, url: "", w: 0, h: 0, cropped: true, orientationPending: S.autoOrient };
     await processPage(page);
     if (burstState !== state || state.cancelled) { if (page.url) URL.revokeObjectURL(page.url); return; }
     S.pages.push(page); renderTray(); flash(); shutterSound();
@@ -723,7 +727,7 @@ async function capture(source = "manual") {
   try {
     for (let i = 0; i < scans.length; i++) {
       const scan = scans[i];
-      const page = { id: ++S.seq, fw, fh, corners: scan.corners, rot: 0, mode: null, frame: null, out: null, url: "", w: 0, h: 0, cropped: scan.cropped };
+      const page = { id: ++S.seq, fw, fh, corners: scan.corners, rot: 0, mode: null, frame: null, out: null, url: "", w: 0, h: 0, cropped: scan.cropped, orientationPending: S.autoOrient && scan.cropped };
       page.frameReady = frameReady.then(frame => { page.frame = frame; return frame; });
       setPill(`processing ${i + 1} of ${scans.length}…`);
       // Processing transfers its buffer to the worker. Other receipts need a
@@ -756,7 +760,7 @@ async function processPage(page, img = null) {
   const fused = page.fusionFrame && JSON.stringify(page.corners) === JSON.stringify(page.fusionCorners);
   if (fused) img = await frameImageData({ frame: page.fusionFrame, frameReady: Promise.resolve() });
   else img = img || await frameImageData(page);
-  const res = await callWorker({
+  let res = await callWorker({
     op: "process", data: img.data, w: img.width, h: img.height,
     corners: fused ? V.frameCorners(img.width, img.height) : page.corners, mode: page.mode || S.mode, rot: page.rot,
     sharpness: S.sharpness,
@@ -766,6 +770,24 @@ async function processPage(page, img = null) {
   const c = document.createElement("canvas");
   c.width = res.w; c.height = res.h;
   c.getContext("2d").putImageData(new ImageData(res.data, res.w, res.h), 0, 0);
+  if (page.orientationPending) {
+    try {
+      setPill("checking text orientation…");
+      const sample = document.createElement("canvas"), scale = Math.min(1, 2600 / Math.max(res.w, res.h));
+      sample.width = Math.max(1, Math.round(res.w * scale)); sample.height = Math.max(1, Math.round(res.h * scale));
+      sample.getContext("2d").drawImage(c, 0, 0, sample.width, sample.height);
+      const result = await detectOrientation(sample, { retry: !!page.orientationRetry });
+      page.orientation = { ...result, status: result.confident ? result.turns ? "rotated" : "upright" : "uncertain" };
+      if (result.confident && result.turns) {
+        page.rot = (page.rot + result.turns) % 4;
+        res = V.rotate(res.data, res.w, res.h, result.turns);
+        c.width = res.w; c.height = res.h;
+        c.getContext("2d").putImageData(new ImageData(res.data, res.w, res.h), 0, 0);
+      }
+    } catch {
+      page.orientation = { status: "unavailable" };
+    } finally { page.orientationPending = false; page.orientationRetry = false; }
+  }
   const blob = await new Promise((r) => c.toBlob(r, "image/jpeg", (page.mode || S.mode) === "receipt" ? 0.97 : 0.9));
   if (page.url) URL.revokeObjectURL(page.url);
   page.out = blob; page.url = URL.createObjectURL(blob); page.w = res.w; page.h = res.h;
@@ -780,6 +802,7 @@ async function reprocess(page) {
   finally { S.busy--; if (li) li.classList.remove("busy"); }
   renderTray();
   if (S.editing === page) $("edimg").src = page.url;
+  if (S.editing === page) showOrientation(page);
 }
 
 async function reprocessAll() {
@@ -829,7 +852,7 @@ function renderTray() {
       li.innerHTML = `<img alt=""><span class="num mono"></span><div class="acts"><button type="button" data-act="rot" title="Rotate right">⟳</button><button type="button" data-act="del" title="Delete">×</button></div>`;
       li.addEventListener("click", (e) => {
         const act = e.target.dataset && e.target.dataset.act;
-        if (act === "rot") { p.rot = (p.rot + 1) % 4; reprocess(p); }
+        if (act === "rot") { p.orientation = null; p.rot = (p.rot + 1) % 4; reprocess(p); }
         else if (act === "del") removePage(p);
         else openEditor(p);
       });
@@ -864,9 +887,15 @@ function openEditor(page) {
   $("edimg").src = page.url;
   $("edtitle").textContent = `page ${S.pages.indexOf(page) + 1} of ${S.pages.length}`;
   $("edmode").value = page.mode || "";
+  showOrientation(page);
   leaveCornerMode();
   $("editor").hidden = false;
   $("edclose").focus();
+}
+
+function showOrientation(page) {
+  const status = page.orientation?.status;
+  $("edorientation").textContent = status === "rotated" ? `auto-rotated ${page.orientation.turns * 90}°` : status === "upright" ? "text upright" : status === "uncertain" ? "orientation uncertain — use arrows" : status === "unavailable" ? "auto-rotate unavailable — use arrows" : "";
 }
 
 function closeEditor() {
@@ -958,26 +987,34 @@ async function pagePng(page) {
 /* ---------- export ---------- */
 
 async function downloadPdf() {
-  if (!S.pages.length || S.busy) return null;
-  S.busy++;
-  setPill("writing PDF…");
-  try {
-    const pages = [];
-    for (const p of S.pages) pages.push({ jpeg: new Uint8Array(await p.out.arrayBuffer()), width: p.w, height: p.h });
-    const bytes = buildPdf(pages, { pageSize: S.pageSize, title: `Scan ${stamp()}` });
-    const blob = new Blob([bytes], { type: "application/pdf" });
-    download(blob, `scancat-${stamp()}.pdf`);
-    setPill(`PDF saved — ${pages.length} page${pages.length === 1 ? "" : "s"}, ${(blob.size / 1048576).toFixed(1)} MB`, "ok", 3000);
-    return blob;
-  } finally { S.busy--; }
+  return downloadReceipts("pdf");
 }
 
 async function downloadJpegs() {
-  const base = `scancat-${stamp()}`;
-  for (let i = 0; i < S.pages.length; i++) {
-    download(S.pages[i].out, `${base}-p${String(i + 1).padStart(2, "0")}.jpg`);
-    await sleep(350);
-  }
+  return downloadReceipts("jpg");
+}
+
+async function downloadReceipts(format) {
+  if (!S.pages.length || S.busy) return null;
+  const pages = S.pages.map(p => ({ out: p.out, w: p.w, h: p.h }));
+  const pageSize = S.pageSize, base = `scancat-${stamp()}`;
+  S.busy++;
+  setPill("packing receipts…");
+  try {
+    const entries = [];
+    for (const [i, p] of pages.entries()) {
+      const name = `${base}-receipt-${String(i + 1).padStart(2, "0")}.${format}`;
+      const data = format === "pdf" ? buildPdf([{ jpeg: new Uint8Array(await p.out.arrayBuffer()), width: p.w, height: p.h }], { pageSize, title: `Receipt ${i + 1}` }) : p.out;
+      entries.push({ name, data });
+    }
+    const blob = await buildZip(entries);
+    download(blob, `${base}-${format === "pdf" ? "pdfs" : "jpegs"}.zip`);
+    setPill(`ZIP saved — ${pages.length} receipt${pages.length === 1 ? "" : "s"}, ${(blob.size / 1048576).toFixed(1)} MB`, "ok", 3000);
+    return blob;
+  } catch (error) {
+    setPill(`Export failed: ${error.message}`, "bad", 5000);
+    return null;
+  } finally { S.busy--; }
 }
 
 /* ---------- wiring ---------- */
@@ -1023,6 +1060,8 @@ function wire() {
   $("auto").checked = S.auto; $("sound").checked = S.sound;
   updateZoomUI();
   wireZoom();
+  $("autoorient").checked = S.autoOrient;
+  $("autoorient").addEventListener("change", e => { S.autoOrient = e.target.checked; savePrefs(); });
   $("multiple").checked = S.multi;
   $("burstcapture").disabled = S.multi;
   $("multiple").addEventListener("change", e => {
@@ -1132,8 +1171,17 @@ function wire() {
 
   $("edclose").addEventListener("click", closeEditor);
   $("editor").addEventListener("click", (e) => { if (e.target === $("editor")) closeEditor(); });
-  $("edrotl").addEventListener("click", () => { const p = S.editing; if (p) { p.rot = (p.rot + 3) % 4; reprocess(p); } });
-  $("edrotr").addEventListener("click", () => { const p = S.editing; if (p) { p.rot = (p.rot + 1) % 4; reprocess(p); } });
+  $("edrotl").addEventListener("click", () => { const p = S.editing; if (p) { p.orientation = null; p.rot = (p.rot + 3) % 4; reprocess(p); } });
+  $("edrotr").addEventListener("click", () => { const p = S.editing; if (p) { p.orientation = null; p.rot = (p.rot + 1) % 4; reprocess(p); } });
+  $("edautorotate").addEventListener("click", async () => {
+    const page = S.editing; if (!page || S.busy) return;
+    const buttons = [$("edautorotate"), $("edrotl"), $("edrotr"), $("edmode"), $("edcorners")];
+    buttons.forEach(button => { button.disabled = true; }); $("edautorotate").textContent = "checking…";
+    page.orientationPending = true; page.orientationRetry = true;
+    try { await reprocess(page); }
+    catch { $("edorientation").textContent = "could not process this page — try again"; }
+    finally { buttons.forEach(button => { button.disabled = false; }); $("edautorotate").textContent = "auto rotate"; }
+  });
   $("edmode").addEventListener("change", (e) => { const p = S.editing; if (p) { p.mode = e.target.value || null; reprocess(p); } });
   $("edcorners").addEventListener("click", enterCornerMode);
   $("eddel").addEventListener("click", () => { if (S.editing) removePage(S.editing); });

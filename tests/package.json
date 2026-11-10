@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "fixtures": "node make-fixtures.mjs",
-    "unit": "node unit.mjs && node resolution.mjs && node autocapture.mjs && node fusion.mjs && node timer.mjs",
+    "unit": "node unit.mjs && node resolution.mjs && node autocapture.mjs && node fusion.mjs && node timer.mjs && node orientation.mjs && node zip.mjs",
     "test": "npm run unit && node run-tests.mjs"
   },
   "dependencies": {

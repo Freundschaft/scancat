@@ -76,6 +76,12 @@ async function newPage(dialogPlan = []) {
   const cdp = await page.createCDPSession();
   await cdp.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: DL, eventsEnabled: true });
   await page.goto(BASE, { waitUntil: "networkidle0" });
+  // Keep existing camera/algorithm tests independent of OCR runtime and text
+  // guesses on synthetic bars. Orientation has its own real-engine test below.
+  await page.evaluate(() => {
+    window.__scancat.S.autoOrient = false;
+    document.getElementById("autoorient").checked = false;
+  });
   return ctx;
 }
 
@@ -84,6 +90,24 @@ async function waitForDownload(pattern, timeoutMs = 20000) {
     const f = fs.readdirSync(DL).find((n) => pattern.test(n) && !n.endsWith(".crdownload"));
     return f ? path.join(DL, f) : null;
   }, `download ${pattern}`, timeoutMs, 200);
+}
+
+function readZip(file) {
+  const bytes = fs.readFileSync(file), end = bytes.length - 22;
+  assertEq(bytes.readUInt32LE(end), 0x06054b50, "ZIP footer");
+  const count = bytes.readUInt16LE(end + 10), entries = [];
+  let pos = bytes.readUInt32LE(end + 16);
+  for (let i = 0; i < count; i++) {
+    assertEq(bytes.readUInt32LE(pos), 0x02014b50, "ZIP directory entry");
+    assertEq(bytes.readUInt16LE(pos + 10), 0, "stored entry preserves scan bytes");
+    const size = bytes.readUInt32LE(pos + 24), nameLen = bytes.readUInt16LE(pos + 28), offset = bytes.readUInt32LE(pos + 42);
+    const name = bytes.toString("utf8", pos + 46, pos + 46 + nameLen);
+    assertEq(bytes.readUInt32LE(offset), 0x04034b50, "ZIP local entry");
+    const start = offset + 30 + bytes.readUInt16LE(offset + 26) + bytes.readUInt16LE(offset + 28);
+    entries.push({ name, bytes: bytes.subarray(start, start + size) });
+    pos += 46 + nameLen + bytes.readUInt16LE(pos + 30) + bytes.readUInt16LE(pos + 32);
+  }
+  return entries;
 }
 
 const state = (page) => page.evaluate(() => {
@@ -128,6 +152,7 @@ test("landing page: no errors, camera off, no network beyond the origin", async 
   const foreign = ctx.requests.filter((u) => !u.startsWith(BASE));
   assertEq(foreign.length, 0, `cross-origin requests: ${foreign.join(", ")}`);
   assertEq(ctx.errors.length, 0, `console errors: ${ctx.errors.join(" | ")}`);
+  assertEq(ctx.requests.filter(url => url.includes("/assets/ocr/")).length, 0, "landing must not load OCR assets");
   await page.close();
 });
 
@@ -175,6 +200,7 @@ test("manual capture with auto off; rotation swaps the page dimensions", async (
   await page.click("#auto");
   assert(!(await page.$eval("#auto", (c) => c.checked)), "auto off");
   const before = (await state(page)).n;
+  await page.focus("#shutter");
   await page.keyboard.press("Space");
   await until(async () => (await state(page)).n === before + 1, "one more page after space");
   await until(async () => !(await state(page)).busy, "processing done");
@@ -210,6 +236,7 @@ test("digital zoom crops the detected and captured camera region", async () => {
   await page.$eval("#zoom", (el) => { el.value = "2"; el.dispatchEvent(new Event("input", { bubbles: true })); });
   assertEq(await page.$eval("#zoomvalue", (el) => el.value), "2×", "zoom readout");
   const before = (await state(page)).n;
+  await page.focus("#shutter");
   await page.keyboard.press("Space");
   await until(async () => (await state(page)).n === before + 1, "zoomed capture");
   await until(async () => !(await state(page)).busy, "zoomed processing done");
@@ -233,7 +260,7 @@ test("corner editor: 'use the whole frame' re-warps the page to the full camera 
   await page.click("#edclose");
 });
 
-test("drag-reorder, backspace removes the last page, PDF export opens in MuPDF with the right page count", async () => {
+test("reordered receipts export as ZIPs with individual PDFs and unchanged JPEGs", async () => {
   const { page } = global.live;
   let st = await state(page);
   const ids = st.pages.map((p) => p.id);
@@ -256,12 +283,14 @@ test("drag-reorder, backspace removes the last page, PDF export opens in MuPDF w
   // export
   await page.select("#pagesize", "a4");
   await page.click("#pdf");
-  const file = await waitForDownload(/^scancat-\d{8}-\d{4}\.pdf$/);
-  const bytes = fs.readFileSync(file);
-  const doc = mupdf.Document.openDocument(bytes, "application/pdf");
-  assertEq(doc.countPages(), st.n, "pdf page count");
+  const file = await waitForDownload(/^scancat-\d{8}-\d{4}-pdfs\.zip$/);
+  const entries = readZip(file);
+  assertEq(entries.length, st.n, "one PDF per receipt");
   for (let i = 0; i < st.n; i++) {
-    const b = doc.loadPage(i).getBounds();
+    assert(entries[i].name.endsWith(`-receipt-${String(i + 1).padStart(2, "0")}.pdf`), "numbered in tray order");
+    const doc = mupdf.Document.openDocument(entries[i].bytes, "application/pdf");
+    assertEq(doc.countPages(), 1, "each PDF contains exactly one receipt");
+    const b = doc.loadPage(0).getBounds();
     const bw = b[2] - b[0], bh = b[3] - b[1];
     const [ew, eh] = st.pages[i].h >= st.pages[i].w ? [595.28, 841.89] : [841.89, 595.28];
     assert(Math.abs(bw - ew) < 0.5 && Math.abs(bh - eh) < 0.5, `page ${i + 1}: A4 media box matching orientation, got ${bw}×${bh}`);
@@ -269,13 +298,22 @@ test("drag-reorder, backspace removes the last page, PDF export opens in MuPDF w
   // render the page that is still a cropped scan: mostly white with dark ink
   const idx = st.pages.findIndex((p) => p.w !== p.fw);
   assert(idx >= 0, "a cropped page remains");
-  const pix = doc.loadPage(idx).toPixmap(mupdf.Matrix.scale(0.5, 0.5), mupdf.ColorSpace.DeviceGray, false);
+  const doc = mupdf.Document.openDocument(entries[idx].bytes, "application/pdf");
+  const pix = doc.loadPage(0).toPixmap(mupdf.Matrix.scale(0.5, 0.5), mupdf.ColorSpace.DeviceGray, false);
   const px = pix.getPixels(), n = pix.getWidth() * pix.getHeight();
   let white = 0, dark = 0;
   for (let i = 0; i < n; i++) { if (px[i] > 225) white++; else if (px[i] < 70) dark++; }
   assert(white / n > 0.55, `rendered scan should be mostly paper-white (${(white / n).toFixed(2)})`);
   assert(dark / n > 0.03, `rendered scan should contain ink (${(dark / n).toFixed(3)})`);
-  assert(/PDF saved/.test((await state(page)).pill), "status confirms save");
+  assert(/ZIP saved/.test((await state(page)).pill), "status confirms save");
+  await page.click("#jpgs");
+  const jpgs = readZip(await waitForDownload(/^scancat-\d{8}-\d{4}-jpegs\.zip$/));
+  assertEq(jpgs.length, st.n, "one JPEG per receipt");
+  const expected = await page.evaluate(async () => Promise.all(window.__scancat.S.pages.map(async p => Array.from(new Uint8Array(await p.out.arrayBuffer())))));
+  for (let i = 0; i < jpgs.length; i++) {
+    assert(jpgs[i].name.endsWith(`-receipt-${String(i + 1).padStart(2, "0")}.jpg`), "JPEG tray order");
+    assert(Buffer.from(expected[i]).equals(jpgs[i].bytes), "JPEG bytes must remain unchanged");
+  }
   await page.screenshot({ path: path.join(HERE, "shot-live.png") });
 });
 
@@ -293,6 +331,7 @@ test("clear asks for confirmation, then empties the tray; no foreign requests or
   await page.click("#clear");
   await until(async () => (await state(page)).n === 0, "tray emptied");
   assertEq(await page.$eval("#count", (e) => e.textContent), "no pages yet", "count reset");
+  assertEq(ctx.requests.filter(url => /orientation-model-worker\.js|\/assets\/(ocr|orientation)\//.test(url)).length, 0, "disabled orientation must not load model assets during captures");
   assert(await page.$eval("#pdf", (b) => b.disabled), "download disabled again");
   const foreign = ctx.requests.filter((u) => !u.startsWith(BASE));
   assertEq(foreign.length, 0, `cross-origin requests: ${foreign.join(", ")}`);
@@ -304,6 +343,7 @@ test("screenshots for the record (landing, phone width)", async () => {
   const ctx = await newPage();
   await ctx.page.screenshot({ path: path.join(HERE, "shot-landing.png") });
   await ctx.page.setViewport({ width: 400, height: 860 });
+  await ctx.page.evaluate(() => { window.__scancat.S.auto = true; document.getElementById("auto").checked = true; });
   await ctx.page.click("#start");
   await until(async () => (await state(ctx.page)).running, "camera running");
   await until(async () => (await state(ctx.page)).n >= 1, "a capture", 20000, 200);
@@ -348,6 +388,104 @@ test("multiple receipts, T timer and aligned-frame capture work through the real
       const p = window.__scancat.S.pages.at(-1); return { frames: p.fusedFrames, raw: !!p.fusionFrame, original: !!p.frame };
     });
     assert(fused.frames >= 2 && fused.raw && fused.original, "burst did not preserve a composite and the sharpest original");
+  } finally { await context.close(); }
+});
+
+test("local text orientation corrects all quarter-turns and preserves manual overrides", async () => {
+  const context = await browser.createBrowserContext();
+  const page = await context.newPage(), requests = [];
+  page.on("request", request => { if (/^https?:/.test(request.url())) requests.push(request.url()); });
+  try {
+    await page.goto(BASE, { waitUntil: "networkidle0" });
+    const results = await page.evaluate(async () => {
+      const api = window.__scancat; api.S.mode = "original";
+      const source = document.createElement("canvas"); source.width = 900; source.height = 1100;
+      const ctx = source.getContext("2d"); ctx.fillStyle = "white"; ctx.fillRect(0, 0, 900, 1100);
+      ctx.fillStyle = "black"; ctx.font = "24px serif";
+      const lines = ["SCANCAT RECEIPT ORIENTATION TEST", "Thank you for shopping with us today.", "Fresh bread and seasonal vegetables", "Invoice number 123456 customer copy", "Subtotal 29.90 Tax 5.68 Total 35.58", "Payment received by credit card.", "Keep this receipt for your records.", "Please visit our store again soon."];
+      for (let i = 0; i < 24; i++) ctx.fillText(lines[i % lines.length], 45, 65 + i * 39);
+      const results = [];
+      for (const turn of [0, 1, 2, 3]) {
+        const canvas = document.createElement("canvas"); canvas.width = turn % 2 ? 1100 : 900; canvas.height = turn % 2 ? 900 : 1100;
+        const c = canvas.getContext("2d"); c.translate(canvas.width / 2, canvas.height / 2); c.rotate(turn * Math.PI / 2); c.drawImage(source, -450, -550);
+        const frame = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+        const p = { id: ++api.S.seq, fw: canvas.width, fh: canvas.height, corners: api.V.frameCorners(canvas.width, canvas.height), rot: 0, mode: "original", frame, frameReady: Promise.resolve(frame), cropped: true, orientationPending: true, url: "", out: null };
+        await api.processPage(p); const initial = p.rot;
+        await api.processPage(p);
+        results.push({ turn, initial, rot: p.rot, w: p.w, h: p.h, confident: p.orientation.confident });
+        api.S.pages.push(p);
+      }
+      api.renderTray(); document.getElementById("scanner").hidden = false; document.body.classList.add("live"); return results;
+    });
+    for (const result of results) {
+      assert(result.confident, `orientation ${result.turn} should be confident`);
+      assertEq(result.rot, (4 - result.turn) % 4, "clockwise correction");
+      assertEq(result.initial, result.rot, "reprocessing must not rotate twice");
+      assertEq(result.w, 900, "upright width"); assertEq(result.h, 1100, "upright height");
+    }
+    await page.click('#pages [data-id="1"] img'); await page.click("#edrotr");
+    await until(() => page.evaluate(() => !window.__scancat.S.busy), "manual rotation");
+    await page.select("#edmode", "gray");
+    await until(() => page.evaluate(() => !window.__scancat.S.busy), "look change");
+    assertEq(await page.evaluate(() => window.__scancat.S.editing.rot), 1, "look change preserves manual rotation");
+    await page.click("#edautorotate");
+    await until(() => page.evaluate(() => !window.__scancat.S.busy), "explicit auto rotation", 25000);
+    assertEq(await page.evaluate(() => window.__scancat.S.editing.rot), 0, "auto button restores upright text");
+    assertEq(requests.filter(url => !url.startsWith(BASE)).length, 0, "OCR must never request off-origin assets");
+  } finally { await context.close(); }
+});
+
+for (const fallback of [false, true]) test(fallback ? "missing orientation model falls back to local OCR in all four directions" : "short tickets use the fast classifier in all four directions", async () => {
+  const context = await browser.createBrowserContext(), page = await context.newPage();
+  try {
+    await page.goto(BASE, { waitUntil: "networkidle0" });
+    if (fallback) {
+      await page.setRequestInterception(true);
+      page.on("request", request => /orientation-model-worker\.js|\/assets\/orientation\//.test(request.url()) ? request.abort() : request.continue());
+    }
+    const results = await page.evaluate(async () => {
+      const { detectOrientation } = await import("./js/orientation.js");
+      const source = document.createElement("canvas"); source.width = 620; source.height = 340;
+      const ctx = source.getContext("2d"); ctx.fillStyle = "white"; ctx.fillRect(0, 0, 620, 340);
+      ctx.fillStyle = "black"; ctx.font = "26px Arial";
+      ["WIENER LINIEN", "Einzelfahrt", "Bitte entwerten", "Please validate", "1 Fahrt WIEN     EUR 2.40"].forEach((line, i) => ctx.fillText(line, 35, 55 + i * 50));
+      const results = [];
+      for (const turn of [0, 1, 2, 3]) {
+        const c = document.createElement("canvas"); c.width = turn % 2 ? 340 : 620; c.height = turn % 2 ? 620 : 340;
+        const x = c.getContext("2d"); x.translate(c.width / 2, c.height / 2); x.rotate(turn * Math.PI / 2); x.drawImage(source, -310, -170);
+        results.push({ turn, ...await detectOrientation(c) });
+      }
+      return results;
+    });
+    for (const result of results) {
+      assert(result.confident, `short ticket ${result.turn} must be confident`);
+      assertEq(result.method, fallback ? "ocr" : "classifier", "short ticket uses expected orientation engine");
+      assertEq(result.turns, (4 - result.turn) % 4, "short ticket correction");
+    }
+  } finally { await context.close(); }
+});
+
+for (const blank of [true, false]) test(blank ? "blank scans stay unchanged without loading OCR" : "unavailable OCR preserves the scan and manual rotation", async () => {
+  const context = await browser.createBrowserContext(), page = await context.newPage(), requests = [];
+  try {
+    await page.goto(BASE, { waitUntil: "networkidle0" });
+    page.on("request", request => requests.push(request.url()));
+    if (!blank) {
+      await page.setRequestInterception(true);
+      page.on("request", request => /orientation-model-worker\.js|\/assets\/(ocr|orientation)\//.test(request.url()) ? request.abort() : request.continue());
+    }
+    const result = await page.evaluate(async blank => {
+      const api = window.__scancat, c = document.createElement("canvas"); c.width = 500; c.height = 600;
+      const ctx = c.getContext("2d"); ctx.fillStyle = "white"; ctx.fillRect(0, 0, 500, 600);
+      if (!blank) { ctx.fillStyle = "black"; ctx.font = "22px serif"; for (let i = 0; i < 14; i++) ctx.fillText("Receipt total and item 123.45", 20, 40 + i * 35); }
+      const frame = await new Promise(resolve => c.toBlob(resolve, "image/png"));
+      const p = { id: 1, fw: 500, fh: 600, corners: api.V.frameCorners(500, 600), rot: 0, mode: "original", frame, frameReady: Promise.resolve(frame), orientationPending: true, cropped: true, url: "" };
+      await api.processPage(p);
+      return { status: p.orientation.status, rot: p.rot, saved: !!p.out, w: p.w, h: p.h };
+    }, blank);
+    assertEq(result.status, blank ? "uncertain" : "unavailable", "orientation fallback status");
+    assert(result.saved && result.rot === 0 && result.w === 500 && result.h === 600, "scan must survive with its orientation unchanged");
+    if (blank) assertEq(requests.filter(url => /orientation-model-worker\.js|\/assets\/(ocr|orientation)\//.test(url)).length, 0, "blank paper must skip both engines");
   } finally { await context.close(); }
 });
 

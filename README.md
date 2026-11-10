@@ -7,7 +7,8 @@
 Hold a page up to your Mac's camera (or an iPhone via Continuity Camera, or
 any webcam). Scancat finds the page's edges live, captures it when you hold
 still, straightens it, cleans it up the way a flatbed would, and stacks page
-after page into one PDF. No phone, no AirDrop, no cropping by hand.
+after page into a tray. Download a ZIP of individual receipt PDFs or JPEGs.
+No phone, no AirDrop, no cropping by hand.
 
 Scancat is the sibling of [Redacat](https://nipunbatra.github.io/redacat/)
 and [Diffcat](https://nipunbatra.github.io/diffcat/) and shares their rule: a
@@ -15,6 +16,18 @@ strict `Content-Security-Policy` (`default-src 'none'`) makes network requests
 impossible, so the page couldn't upload a frame even if it wanted to.
 
 ## What you get
+
+- **Automatic text orientation.** New cropped scans are checked locally for
+  upright text, with confidence-gated quarter-turn rotation. Disable
+  “auto-orient text” to keep the camera orientation. Existing scans have an
+  “auto rotate” button in the editor; manual arrows always remain available.
+  A small PP-LCNet classifier checks a 224-pixel preview in a background worker.
+  Uncertain predictions use orientation detection and an English/German OCR
+  fallback comparing all four directions, which can take a few extra seconds.
+  Sparse or blurry text may still be uncertain and is left unchanged.
+  Recognized text is not retained. The bundled models and runtime load on first
+  use and never upload images. Changing a scan's look does not override a
+  manual rotation. See [model provenance](assets/orientation/README.md).
 
 - **Edges found live.** Every frame is downscaled and run through a small
   Canny-style edge detector, a gradient-guided Hough transform, and a search
@@ -51,9 +64,10 @@ impossible, so the page couldn't upload a frame even if it wanted to.
 - **A page tray.** Rotate, delete, drag to reorder; click a page to open it
   large, fix its corners by dragging them, override its look, copy it to the
   clipboard, or download it as a JPEG.
-- **PDF export**, written from scratch in the tab (one JPEG per page; page box
-  fits the scan, or A4 / Letter). Keyboard: space captures, ⌫ removes the last
-  page, ⌘S downloads.
+- **ZIP export**, with a separate PDF or JPEG for each receipt, numbered in tray
+  order. PDFs fit the scan, or use A4 / Letter. Exports reuse the processed images
+  without rerunning OCR or reducing quality. Keyboard: space captures,
+  ⌫ removes the last page, ⌘S downloads the PDF ZIP.
 - **Camera picker** for machines with more than one camera (built-in, iPhone,
   USB), remembered across visits.
 - **Stream resolution.** Request the highest available resolution or choose
@@ -80,7 +94,8 @@ impossible, so the page couldn't upload a frame even if it wanted to.
 
 ## Running locally / self-hosting
 
-No build step, no dependencies. Serve the directory with any static server
+No build step or dependency installation. The orientation engine is vendored
+under `assets/ocr` and runs in a local Web Worker. Serve the directory with any static server
 (camera access needs https or localhost):
 
 ```sh
@@ -118,3 +133,5 @@ BASE=https://nipunbatra.github.io/scancat/ node run-tests.mjs   # live site
 ## License
 
 [MIT](LICENSE). Font: [Archivo Black](https://fonts.google.com/specimen/Archivo+Black) (OFL).
+Bundled Tesseract.js, Tesseract.js-core and OSD model: Apache-2.0; see
+[OCR asset provenance and licenses](assets/ocr/README.md).
